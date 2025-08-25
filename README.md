@@ -77,21 +77,32 @@ Every step in the final generated solution is therefore informed not by one impu
 
 ---
 
-## 🧩 Architectural Components in Detail
-
-The different components within Deep Thinker fulfill specialized cognitive roles to achieve a holistic reasoning process, driving systemic intelligence through a clear division of labor.
-
-### The Policy Network (The Proposer)
-*   **Objective:** To generate a diverse set of high-quality candidate actions from the current state.
-*   **Implementation:** In the `TokenLevelMathTask`, this is handled by `get_possible_actions`. It queries an LLM (`MODEL_POLICY`) for the `top_k_actions` next tokens and their probabilities. This provides the raw material for the search, defining "what's possible" from any given point.
-
-### The Value Network (The Evaluator)
-*   **Objective:** To provide a reliable heuristic score for any state, guiding the search towards promising areas of the solution space.
-*   **Implementation:** The `get_state_value` function queries a different LLM (`MODEL_VALUE`) with a specialized prompt, asking it to score a partial or complete solution on a scale of 0.0 to 1.0. This score is crucial; it acts as the model's "gut feeling" or intuition, telling the search algorithm which paths are worth exploring further.
-
 ### The LLM-UCT Algorithm (The Arbiter)
-*   **Role:** The heart of the Deep Thinker model, where policy and value information are integrated to make decisions.
-*   **Implementation:** The `MCTSNode` class and its `uct_score_llm` method implement a variant of the Upper Confidence bounds for Trees (UCT) algorithm. This formula is the core of the decision-making process. It intelligently combines the `prior_p` (from the Policy Network), the average observed reward `Q` (from the Value Network's feedback), and the visit counts `N` to decide which branch of the thought-tree to explore next.
+*   **Role:** The heart of the Deep Thinker model, where policy and value information are integrated to make decisions during the tree search.
+*   **Implementation:** The `MCTSNode` class and its `uct_score_llm` method implement our specialized variant of the Upper Confidence bounds for Trees (UCT) algorithm. This formula is the core of the decision-making process for selecting the next node to explore.
+
+The selection score for a child node (representing action $a$ from parent state $s$) is calculated as:
+
+<div align="center">
+  <img src="https://latex.codecogs.com/svg.image?\text{Score}(s,&space;a)&space;=&space;\underbrace{\left(\bar{Q}(s,&space;a)&space;-&space;k_{\text{var}}&space;\sqrt{\text{Var}(Q(s,&space;a))}\right)}_{\text{Pessimistic&space;Value&space;(Exploitation)}}&space;&plus;&space;\underbrace{C_p&space;\cdot&space;P_{\text{eff}}(s,&space;a)&space;\cdot&space;\frac{\sqrt{N(s)}}{1&space;&plus;&space;N(s,&space;a)}}_{\text{Exploration&space;Bonus}}" title="\text{Score}(s, a) = \underbrace{\left(\bar{Q}(s, a) - k_{\text{var}} \sqrt{\text{Var}(Q(s, a))}\right)}_{\text{Pessimistic Value (Exploitation)}} + \underbrace{C_p \cdot P_{\text{eff}}(s, a) \cdot \frac{\sqrt{N(s)}}{1 + N(s, a)}}_{\text{Exploration Bonus}}" />
+</div>
+
+Where:
+-   **$\bar{Q}(s, a)$**: The average reward (value) observed after taking action $a$.
+-   **$k_{\text{var}}$**: A coefficient that controls the penalty for reward variance. Higher values make the search more risk-averse, favoring paths with stable rewards.
+-   **$\text{Var}(Q(s, a))$**: The variance of the rewards observed for action $a$. This term quantifies the uncertainty of the action's outcome.
+-   **$C_p$**: An exploration constant that balances exploitation and exploration.
+-   **$N(s)$** and **$N(s, a)$**: The visit counts for the parent state and the child node, respectively.
+-   **$P_{\text{eff}}(s, a)$**: The *effective prior probability*, a key innovation. It moderates the Policy Network's confidence:
+
+<div align="center">
+  <img src="https://latex.codecogs.com/svg.image?P_{\text{eff}}(s,&space;a)&space;=&space;(1&space;-&space;\lambda_{\text{skepticism}})&space;\cdot&space;P(s,&space;a)&space;&plus;&space;\lambda_{\text{skepticism}}&space;\cdot&space;\frac{1}{n_{\text{siblings}}}" title="P_{\text{eff}}(s, a) = (1 - \lambda_{\text{skepticism}}) \cdot P(s, a) + \lambda_{\text{skepticism}} \cdot \frac{1}{n_{\text{siblings}}}" />
+</div>
+
+-   **$P(s, a)$**: The initial prior probability of action $a$ from the Policy Network.
+-   **$\lambda_{\text{skepticism}}$**: A "skepticism" coefficient that blends the LLM's prior with a uniform distribution, preventing the search from over-committing to a potentially flawed initial prediction and encouraging broader exploration.
+
+This enhanced formula allows the Arbiter to make more nuanced decisions than standard UCT, specifically by being cautious about paths with high uncertainty (high variance) and by tempering overconfident suggestions from the Policy LLM.
 
 <br>
 
@@ -101,11 +112,11 @@ The different components within Deep Thinker fulfill specialized cognitive roles
 
 The operation of Deep Thinker follows a clear, iterative cycle, mimicking a structured thought process:
 
-1.  **Selection:** The algorithm starts at the root of the "thought tree" (the initial problem) and traverses down the tree by repeatedly selecting the child node with the highest UCT score. This focuses the search on the most promising known path.
+1.  **Selection:** The algorithm starts at the root of the "thought tree" (the initial problem) and traverses down the tree by repeatedly selecting the child node with the highest LLM-UCT score. This focuses the search on the most promising known path, balanced by its uncertainty and exploration potential.
 2.  **Expansion:** Once a leaf node (a thought that hasn't been explored yet) is reached, the Policy Network (`get_possible_actions`) is called to generate all possible next steps, expanding the tree.
 3.  **Simulation (Rollout):** From one of these new nodes, a fast, lightweight "rollout" policy is used to quickly generate a complete solution. The Value Network (`get_state_value`) then scores this final outcome. This gives a quick estimate of the potential of the newly expanded branch.
-4.  **Backpropagation:** The score from the simulation is propagated back up the tree, updating the visit count (`N`) and average reward (`Q`) for every node along the selected path. This refines the "intuition" of the search algorithm for future selections.
-5.  **Convergence:** This loop is repeated for a fixed number of `simulations`. The final answer is constructed by following the path from the root with the highest visit count, representing the most thoroughly vetted line of reasoning.
+4.  **Backpropagation:** The score from the simulation is propagated back up the tree, updating the visit count (`N`), average reward (`Q`), and reward variance for every node along the selected path. This refines the "intuition" of the search algorithm for future selections.
+5.  **Convergence:** This loop is repeated for a fixed number of `simulations`. The final answer is constructed by following the path from the root with the highest visit count (`N`), representing the most thoroughly vetted line of reasoning.
 
 <br>
 
